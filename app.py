@@ -5,17 +5,11 @@ import random
 import urllib.parse
 import io
 import requests
-
-import PIL.Image
-if not hasattr(PIL.Image, 'ANTIALIAS'):
-    PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
-
 from PIL import Image, ImageDraw, ImageFont
 import edge_tts
 from moviepy.editor import (
     AudioFileClip,
     ImageClip,
-    CompositeVideoClip,
     concatenate_videoclips
 )
 
@@ -30,6 +24,7 @@ if "scenes" not in st.session_state:
 if "final_video_path" not in st.session_state:
     st.session_state.final_video_path = None
 
+# 상단 네비게이션
 col_nav1, col_nav2 = st.columns([1, 1])
 with col_nav1:
     if st.session_state.step > 1:
@@ -45,6 +40,7 @@ with col_nav2:
 
 st.markdown("---")
 
+# 1. 안전한 이미지 생성 (무조건 1080x1920 정수 규격으로 강제 맞춤)
 def generate_safe_image(prompt: str, scene_idx: int) -> str:
     img_path = os.path.join(OUTPUT_DIR, f"scene_{scene_idx}.png")
     style_suffix = ", highly detailed 3D technical render, unreal engine 5, octane render, 8k resolution, cinematic studio lighting, vertical 9:16 wallpaper"
@@ -58,6 +54,7 @@ def generate_safe_image(prompt: str, scene_idx: int) -> str:
         response = requests.get(image_url, timeout=30)
         if response.status_code == 200 and len(response.content) > 5000:
             img = Image.open(io.BytesIO(response.content)).convert("RGB")
+            img = img.resize((1080, 1920))
             img.save(img_path, "PNG")
             success = True
     except Exception:
@@ -74,6 +71,7 @@ def generate_safe_image(prompt: str, scene_idx: int) -> str:
 
     return img_path
 
+# 2. TTS 음성 생성
 async def create_tts_async(text: str, voice: str, rate: str, output_path: str):
     communicate = edge_tts.Communicate(text, voice, rate=rate)
     await communicate.save(output_path)
@@ -83,6 +81,7 @@ def generate_audio(text: str, voice: str, rate: str, scene_idx: int) -> str:
     asyncio.run(create_tts_async(text, voice, rate, audio_path))
     return audio_path
 
+# 3. 자막 입히기
 def add_subtitle_to_image(image_path: str, text: str) -> str:
     img = Image.open(image_path).convert("RGBA")
     draw = ImageDraw.Draw(img)
@@ -95,6 +94,7 @@ def add_subtitle_to_image(image_path: str, text: str) -> str:
     overlay_draw = ImageDraw.Draw(overlay)
     overlay_draw.rectangle([(60, 1400), (1020, 1580)], fill=(0, 0, 0, 180))
     img = Image.alpha_composite(img, overlay)
+
     draw = ImageDraw.Draw(img)
     draw.text((100, 1450), text, fill=(255, 230, 0, 255), font=font)
 
@@ -102,6 +102,7 @@ def add_subtitle_to_image(image_path: str, text: str) -> str:
     img.convert("RGB").save(out_path, "PNG")
     return out_path
 
+# 4. 초안정 영상 합성 (Pillow 충돌 함수 완전 제거 & yuv420p 인코딩)
 def render_video_with_motion(scenes_data):
     clips = []
     for scene in scenes_data:
@@ -109,16 +110,15 @@ def render_video_with_motion(scenes_data):
         duration = audio.duration
         subbed_img_path = add_subtitle_to_image(scene["image_path"], scene["text"])
 
+        # 1080x1920 정수 규격으로 충돌 없이 바로 생성
         img_clip = ImageClip(subbed_img_path).set_duration(duration)
-        img_clip = img_clip.resize(height=1920).crop(x_center=img_clip.w/2, width=1080)
-        img_clip = img_clip.resize(lambda t: 1.0 + (0.10 / duration) * t)
         img_clip = img_clip.set_audio(audio)
         clips.append(img_clip)
 
     final_video = concatenate_videoclips(clips, method="compose")
     output_mp4 = os.path.join(OUTPUT_DIR, "final_free_shorts.mp4")
 
-    # 모바일 및 인스타그램 호환용 yuv420p 인코딩 옵션 적용
+    # 아이폰 및 인스타그램 완벽 호환 yuv420p 인코딩
     final_video.write_videofile(
         output_mp4,
         fps=30,
@@ -161,7 +161,7 @@ elif st.session_state.step == 2:
                 image_file = generate_safe_image(item["prompt"], idx+1)
                 scenes_data.append({"text": item["text"], "audio_path": audio_file, "image_path": image_file})
 
-            st.write("✂️ **다이내믹 줌인 모션 & 영상 합성 중...**")
+            st.write("✂️ **영상 & 오디오 합성 중...**")
             final_mp4 = render_video_with_motion(scenes_data)
             st.session_state.final_video_path = final_mp4
             status.update(label="🎉 숏츠 영상 완성!", state="complete", expanded=False)
@@ -175,7 +175,7 @@ elif st.session_state.step == 3:
 
     with open(st.session_state.final_video_path, "rb") as f:
         st.download_button(
-            label="📥 아이폰에 완성 영상 다운로드 (.mp4)",
+            label="📥 완성 영상 다운로드 (.mp4)",
             data=f,
             file_name="ai_shorts_video.mp4",
             mime="video/mp4",
