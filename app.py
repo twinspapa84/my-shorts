@@ -17,6 +17,25 @@ st.set_page_config(page_title="AI 숏츠 메이커", page_icon="🎬", layout="c
 OUTPUT_DIR = "shorts_output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# -------------------------------------------------------------
+# 0. 한글 폰트 자동 준비 (글자 깨짐 방지)
+# -------------------------------------------------------------
+FONT_PATH = os.path.join(OUTPUT_DIR, "NanumGothicBold.ttf")
+def ensure_korean_font():
+    if not os.path.exists(FONT_PATH):
+        font_url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf"
+        try:
+            r = requests.get(font_url, timeout=15)
+            with open(FONT_PATH, "wb") as f:
+                f.write(r.content)
+        except Exception:
+            pass
+
+ensure_korean_font()
+
+# -------------------------------------------------------------
+# 세션 상태
+# -------------------------------------------------------------
 if "step" not in st.session_state:
     st.session_state.step = 1
 if "scenes" not in st.session_state:
@@ -24,7 +43,6 @@ if "scenes" not in st.session_state:
 if "final_video_path" not in st.session_state:
     st.session_state.final_video_path = None
 
-# 상단 네비게이션
 col_nav1, col_nav2 = st.columns([1, 1])
 with col_nav1:
     if st.session_state.step > 1:
@@ -40,19 +58,25 @@ with col_nav2:
 
 st.markdown("---")
 
-# 1. 안전한 이미지 생성 (무조건 1080x1920 정수 규격으로 강제 맞춤)
+# -------------------------------------------------------------
+# 1. 봇 차단 뚫는 AI 이미지 생성 (User-Agent 탑재)
+# -------------------------------------------------------------
 def generate_safe_image(prompt: str, scene_idx: int) -> str:
     img_path = os.path.join(OUTPUT_DIR, f"scene_{scene_idx}.png")
-    style_suffix = ", highly detailed 3D technical render, unreal engine 5, octane render, 8k resolution, cinematic studio lighting, vertical 9:16 wallpaper"
+    style_suffix = ", highly detailed 3D technical render, unreal engine 5, octane render, 8k resolution, cinematic studio lighting, vertical 9:16"
     full_prompt = prompt + style_suffix
     encoded_prompt = urllib.parse.quote(full_prompt)
     seed = random.randint(1, 999999)
     image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1080&height=1920&model=flux&seed={seed}&nologo=true"
 
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
     success = False
     try:
-        response = requests.get(image_url, timeout=30)
-        if response.status_code == 200 and len(response.content) > 5000:
+        response = requests.get(image_url, headers=headers, timeout=45)
+        if response.status_code == 200 and len(response.content) > 10000:
             img = Image.open(io.BytesIO(response.content)).convert("RGB")
             img = img.resize((1080, 1920))
             img.save(img_path, "PNG")
@@ -65,13 +89,13 @@ def generate_safe_image(prompt: str, scene_idx: int) -> str:
         draw = ImageDraw.Draw(fallback_img)
         for y in range(0, 1920, 80):
             draw.line([(0, y), (1080, y)], fill=(30, 40, 65), width=2)
-        for x in range(0, 1080, 80):
-            draw.line([(x, 0), (x, 1920)], fill=(30, 40, 65), width=2)
         fallback_img.save(img_path, "PNG")
 
     return img_path
 
-# 2. TTS 음성 생성
+# -------------------------------------------------------------
+# 2. TTS 음성
+# -------------------------------------------------------------
 async def create_tts_async(text: str, voice: str, rate: str, output_path: str):
     communicate = edge_tts.Communicate(text, voice, rate=rate)
     await communicate.save(output_path)
@@ -81,28 +105,44 @@ def generate_audio(text: str, voice: str, rate: str, scene_idx: int) -> str:
     asyncio.run(create_tts_async(text, voice, rate, audio_path))
     return audio_path
 
-# 3. 자막 입히기
+# -------------------------------------------------------------
+# 3. 한글 자막 렌더링 (나눔고딕 볼드 적용)
+# -------------------------------------------------------------
 def add_subtitle_to_image(image_path: str, text: str) -> str:
     img = Image.open(image_path).convert("RGBA")
-    draw = ImageDraw.Draw(img)
+
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 46)
+        font = ImageFont.truetype(FONT_PATH, 44)
     except Exception:
         font = ImageFont.load_default()
 
+    # 하단 자막 반투명 배경 박스
     overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
     overlay_draw = ImageDraw.Draw(overlay)
-    overlay_draw.rectangle([(60, 1400), (1020, 1580)], fill=(0, 0, 0, 180))
+    overlay_draw.rectangle([(50, 1400), (1030, 1580)], fill=(0, 0, 0, 185))
     img = Image.alpha_composite(img, overlay)
 
+    # 두 줄 자동 줄바꿈 처리
     draw = ImageDraw.Draw(img)
-    draw.text((100, 1450), text, fill=(255, 230, 0, 255), font=font)
+    if len(text) > 22:
+        mid = len(text) // 2
+        split_pos = text.rfind(' ', 0, mid + 6)
+        if split_pos == -1:
+            split_pos = mid
+        line1 = text[:split_pos].strip()
+        line2 = text[split_pos:].strip()
+        draw.text((80, 1430), line1, fill=(255, 230, 0, 255), font=font)
+        draw.text((80, 1495), line2, fill=(255, 230, 0, 255), font=font)
+    else:
+        draw.text((80, 1460), text, fill=(255, 230, 0, 255), font=font)
 
     out_path = image_path.replace(".png", "_sub.png")
     img.convert("RGB").save(out_path, "PNG")
     return out_path
 
-# 4. 초안정 영상 합성 (Pillow 충돌 함수 완전 제거 & yuv420p 인코딩)
+# -------------------------------------------------------------
+# 4. 영상 합성 (모바일 완벽 호환 yuv420p)
+# -------------------------------------------------------------
 def render_video_with_motion(scenes_data):
     clips = []
     for scene in scenes_data:
@@ -110,7 +150,6 @@ def render_video_with_motion(scenes_data):
         duration = audio.duration
         subbed_img_path = add_subtitle_to_image(scene["image_path"], scene["text"])
 
-        # 1080x1920 정수 규격으로 충돌 없이 바로 생성
         img_clip = ImageClip(subbed_img_path).set_duration(duration)
         img_clip = img_clip.set_audio(audio)
         clips.append(img_clip)
@@ -118,7 +157,6 @@ def render_video_with_motion(scenes_data):
     final_video = concatenate_videoclips(clips, method="compose")
     output_mp4 = os.path.join(OUTPUT_DIR, "final_free_shorts.mp4")
 
-    # 아이폰 및 인스타그램 완벽 호환 yuv420p 인코딩
     final_video.write_videofile(
         output_mp4,
         fps=30,
